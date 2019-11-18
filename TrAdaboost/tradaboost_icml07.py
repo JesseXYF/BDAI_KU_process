@@ -9,7 +9,7 @@ import os
 import sys
 
 import numpy as np
-from sklearn import svm, tree
+from sklearn import svm, tree, linear_model
 from sklearn.model_selection import train_test_split
 import datetime
 import pandas as pd
@@ -18,11 +18,11 @@ from sklearn import metrics
 
 
 def trainWeightedClassifier(data_training, labels_training, weights):
-    model = svm.LinearSVC(verbose=0, max_iter=5000)
-    # model = tree.DecisionTreeClassifier(criterion="gini", max_features="log2", splitter="random")
+    # model = svm.LinearSVC(verbose=0, max_iter=5000)
+    # model = linear_model.LogisticRegression()
+    model = tree.DecisionTreeClassifier(criterion="gini", splitter="random", max_depth=5)
     model.fit(data_training, labels_training, sample_weight=weights)
     return model
-
 
 # 返回 文件列表Filelist,包含文件名（完整路径）
 def get_filelist(dir, Filelist):
@@ -84,21 +84,39 @@ def error_calculate(model, training_data_target, training_labels_target, weights
     error = np.sum(weights / total * np.abs(labels_predict - training_labels_target))
     return error
 
+def KLsandu(P, Q):
+    p1 = P.sum() / P.shape[0]
+    q1 = Q.sum() / Q.shape[0]
+    P01 = [1 - p1, p1]
+    Q01 = [1 - q1, q1]
+    kl = 0
+    for i in range(2):
+        kl += P01[i] * np.log(P01[i] / Q01[i])
+    print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': ' + '数据集KL散度: ', kl)
+
 
 def TrAdaBoost(N=100):
     # 数据处理
     # 辅助域数据路径
+    # T_data_path_name = str(sys.argv[1])
+    # T_name_list = get_filelist(T_data_path_name, [])
+    # # 去除2018年数据
+    # T_name_list_split_2018 = T_name_list[0:48]
+    # training_data_source, training_labels_source = handle_data_function(T_name_list_split_2018)  # 与新数据分布不相同的数据集
+    # # 源域有少量标签训练数据路径
+    # S_data_path_name = str(sys.argv[2])
+    # S_name_list = get_filelist(S_data_path_name, [])
+    # data_target, labels_target = handle_data_function(S_name_list)  # 与新数据分布相同的数据集
+
     T_data_path_name = str(sys.argv[1])
     T_name_list = get_filelist(T_data_path_name, [])
-    # 去除2018年数据
-    T_name_list_split_2018 = T_name_list[0:48]
-    training_data_source, training_labels_source = handle_data_function(T_name_list_split_2018)  # 与新数据分布不相同的数据集
-    # 源域有少量标签训练数据路径
-    S_data_path_name = str(sys.argv[2])
-    S_name_list = get_filelist(S_data_path_name, [])
-    data_target, labels_target = handle_data_function(S_name_list)  # 与新数据分布相同的数据集
+    datas, labels = handle_data_function(T_name_list)
+    training_data_source, data_target, training_labels_source, labels_target = train_test_split(datas, labels, test_size=0.4, random_state=33)
 
-    imputer_S = preprocessing.Imputer(missing_values='NaN', strategy='most_frequent', axis=0)
+    KLsandu(training_labels_source, labels_target)
+    print("与新数据分布不同的数据集大小", training_data_source.shape)
+    print("与新数据分布相同的数据集大小", data_target.shape)
+    imputer_S = preprocessing.Imputer(missing_values=-1000, strategy='most_frequent', axis=0)
     imputer_S.fit(data_target, labels_target)
 
     training_data_source = imputer_S.transform(training_data_source)
@@ -107,47 +125,49 @@ def TrAdaBoost(N=100):
     training_data_target, test_data_target, training_labels_target, test_labels_target = train_test_split(data_target,
                                                                                                           labels_target,
                                                                                                           test_size=0.25)
-
+    print("与新数据分布相同的数据集用于训练的数据集大小", training_data_target.shape)
+    print("与新数据分布不同的数据集用于测试的数据集大小", test_data_target.shape)
     # 合成训练数据
     training_data = np.r_[training_data_source, training_data_target]
     training_labels = np.r_[training_labels_source, training_labels_target]
 
-    y_test_hot = preprocessing.label_binarize(test_labels_target, classes=(0, 1))  # 将测试集标签用二值化编码夫人方式转换为矩阵
-
     # 对比试验 baseline方法
-    svm_0 = svm.LinearSVC(verbose=0, max_iter=5000)
-    svm_0.fit(training_data, training_labels)
+    # svm_0 = svm.LinearSVC(verbose=0, max_iter=5000)
+    svm_0 = trainWeightedClassifier(training_data, training_labels, None)
     print('——————————————————————————————————————————————')
     print('训练数据用目标域和源域的情况')
     print('The mean accuracy is ' + str(svm_0.score(test_data_target, test_labels_target)))
     print('The error rate is ' + str(1 - svm_0.score(test_data_target, test_labels_target)))
-    svm_y_score_0 = svm_0.decision_function(test_data_target)  # 得到预测的损失值
-    svm_fpr_0, svm_tpr_0, svm_threasholds_0 = metrics.roc_curve(y_test_hot.ravel(),
-                                                                svm_y_score_0.ravel())  # 计算ROC的值,svm_threasholds为阈值
+    # svm_y_score_0 = svm_0.decision_function(test_data_target)  # 得到预测的损失值
+    svm_y_score_0 = svm_0.predict_proba(test_data_target)
+    svm_fpr_0, svm_tpr_0, svm_threasholds_0 = metrics.roc_curve(test_labels_target,
+                                                                svm_y_score_0[:, 1], pos_label=1)  # 计算ROC的值,svm_threasholds为阈值
     svm_auc_0 = metrics.auc(svm_fpr_0, svm_tpr_0)
     print('The auc is ', svm_auc_0)
 
-    svm_1 = svm.LinearSVC(verbose=0, max_iter=5000)
-    svm_1.fit(training_data_target, training_labels_target)
+    # svm_1 = svm.LinearSVC(verbose=0, max_iter=5000)
+    svm_1 = trainWeightedClassifier(training_data_target, training_labels_target, None)
     print('——————————————————————————————————————————————')
     print('训练数据仅用目标域的情况')
     print('The mean accuracy is ' + str(svm_1.score(test_data_target, test_labels_target)))
     print('The error rate is ' + str(1 - svm_1.score(test_data_target, test_labels_target)))
-    svm_y_score_1 = svm_1.decision_function(test_data_target)  # 得到预测的损失值
-    svm_fpr_1, svm_tpr_1, svm_threasholds_1 = metrics.roc_curve(y_test_hot.ravel(),
-                                                                svm_y_score_1.ravel())  # 计算ROC的值,svm_threasholds为阈值
+    # svm_y_score_1 = svm_1.decision_function(test_data_target)  # 得到预测的损失值
+    svm_y_score_1 = svm_1.predict_proba(test_data_target)
+    svm_fpr_1, svm_tpr_1, svm_threasholds_1 = metrics.roc_curve(test_labels_target,
+                                                                svm_y_score_1[:, 1], pos_label=1) # 计算ROC的值,svm_threasholds为阈值
     svm_auc_1 = metrics.auc(svm_fpr_1, svm_tpr_1)
     print('The auc is ', svm_auc_1)
 
-    svm_2 = svm.LinearSVC(verbose=0, max_iter=5000)
-    svm_2.fit(training_data_source, training_labels_source)
+    # svm_2 = svm.LinearSVC(verbose=0, max_iter=5000)
+    svm_2 = trainWeightedClassifier(training_data_source, training_labels_source, None)
     print('——————————————————————————————————————————————')
     print('训练数据仅用源域的情况')
     print('The mean accuracy is ' + str(svm_2.score(test_data_target, test_labels_target)))
     print('The error rate is ' + str(1 - svm_2.score(test_data_target, test_labels_target)))
-    svm_y_score_2 = svm_2.decision_function(test_data_target)  # 得到预测的损失值
-    svm_fpr_2, svm_tpr_2, svm_threasholds_2 = metrics.roc_curve(y_test_hot.ravel(),
-                                                                svm_y_score_2.ravel())  # 计算ROC的值,svm_threasholds为阈值
+    # svm_y_score_2 = svm_2.decision_function(test_data_target)  # 得到预测的损失值
+    svm_y_score_2 = svm_2.predict_proba(test_data_target)
+    svm_fpr_2, svm_tpr_2, svm_threasholds_2 = metrics.roc_curve(test_labels_target,
+                                                                svm_y_score_2[:, 1], pos_label=1)  # 计算ROC的值,svm_threasholds为阈值
     svm_auc_2 = metrics.auc(svm_fpr_2, svm_tpr_2)
     print('The auc is ', svm_auc_2)
     print('——————————————————————————————————————————————')
@@ -212,12 +232,12 @@ def TrAdaBoost(N=100):
     error_final = 1.0 - count_accu / float(len(test_data_target))
     print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': ' + '模型最后的准确率为: ' + str(1 - error_final))
     print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': ' + '模型最后的错误率为: ' + str(error_final))
+    print(metrics.classification_report(test_labels_target, predict, target_names=['NOAKI', 'AKI']))
+
     fpr, tpr, thresholds = metrics.roc_curve(y_true=test_labels_target, y_score=predict, pos_label=1)
     print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': ' + '模型最后的auc为: ', metrics.auc(fpr, tpr))
-    print("fpr:", fpr)
-    print("tpr:", tpr)
     print("N", N)
 
 
 if __name__ == '__main__':
-    TrAdaBoost(int(sys.argv[3]))
+    TrAdaBoost(int(sys.argv[2]))
